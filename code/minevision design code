@@ -1,0 +1,131 @@
+// ===============================
+// MineVision - Dual Sensor System
+// LDR -> Green LED
+// Ultrasonic -> Red LED
+// ===============================
+
+// LDR
+#define LDR_PIN 34
+#define GREEN_LED 25
+
+// Ultrasonic
+#define TRIG_PIN 5
+#define ECHO_PIN 18
+#define RED_LED 26
+
+
+void setup() {
+
+  Serial.begin(115200);
+
+  // LED pins
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+
+  // Ultrasonic pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+
+  Serial.println("MineVision Started");
+}
+
+
+void loop() {
+
+  // =================================
+  // 1. READ LDR
+  // =================================
+
+  int ldrValue = analogRead(LDR_PIN);
+
+  // Higher value = darker/less visibility
+  bool lowVisibility = (ldrValue > 3500);
+
+
+  // =================================
+  // 2. CONTROL GREEN LED
+  // =================================
+
+  if (lowVisibility) {
+    digitalWrite(GREEN_LED, HIGH);
+  }
+  else {
+    digitalWrite(GREEN_LED, LOW);
+  }
+
+
+  // =================================
+  // 3. READ ULTRASONIC SENSOR
+  // =================================
+
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+
+  float distance = duration * 0.0343 / 2;
+
+
+  // =================================
+  // 4. DETECT OBSTACLE
+  // =================================
+
+  bool obstacleDetected = false;
+
+  if (duration > 0 && distance < 30) {
+    obstacleDetected = true;
+  }
+
+
+  // =================================
+  // 5. CONTROL RED LED
+  // =================================
+
+  if (obstacleDetected) {
+    digitalWrite(RED_LED, HIGH);
+  }
+  else {
+    digitalWrite(RED_LED, LOW);
+  }
+
+
+  // =================================
+  // 6. SERIAL MONITOR
+  // =================================
+
+  Serial.print("LDR: ");
+  Serial.print(ldrValue);
+
+  Serial.print(" | Visibility: ");
+
+  if (lowVisibility) {
+    Serial.print("LOW");
+  }
+  else {
+    Serial.print("CLEAR");
+  }
+
+  Serial.print(" | Distance: ");
+  Serial.print(distance);
+  Serial.print(" cm");
+
+  Serial.print(" | Obstacle: ");
+
+  if (obstacleDetected) {
+    Serial.println("YES");
+  }
+  else {
+    Serial.println("NO");
+  }
+
+
+  delay(300);
+}
