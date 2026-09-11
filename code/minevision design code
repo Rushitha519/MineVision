@@ -1,131 +1,517 @@
-// ===============================
-// MineVision - Dual Sensor System
-// LDR -> Green LED
-// Ultrasonic -> Red LED
-// ===============================
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
-// LDR
-#define LDR_PIN 34
-#define GREEN_LED 25
+// =====================================================
+// MINEVISION - DUMPER 1
+// ESP32
+// Ultrasonic + LDR + LEDs + LCD + NRF24L01
+// =====================================================
 
-// Ultrasonic
+
+// ===================== ULTRASONIC =====================
+
 #define TRIG_PIN 5
 #define ECHO_PIN 18
+
+// For demonstration, detect obstacles within 50 cm
+#define OBSTACLE_DISTANCE 50
+
+
+// ===================== LDR =====================
+
+#define LDR_PIN 34
+
+// Change this after checking Serial Monitor
+#define LDR_THRESHOLD 3500
+
+
+// ===================== LEDs =====================
+
+#define GREEN_LED 25
 #define RED_LED 26
 
 
-void setup() {
+// ===================== LCD =====================
 
-  Serial.begin(115200);
+#define LCD_SDA 21
+#define LCD_SCL 22
 
-  // LED pins
-  pinMode(GREEN_LED, OUTPUT);
-  pinMode(RED_LED, OUTPUT);
-
-  // Ultrasonic pins
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
-
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED, LOW);
-
-  Serial.println("MineVision Started");
-}
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 
-void loop() {
+// ===================== NRF24L01 =====================
 
-  // =================================
-  // 1. READ LDR
-  // =================================
+#define NRF_CE 4
+#define NRF_CSN 15
 
-  int ldrValue = analogRead(LDR_PIN);
+// SPI pins
+#define NRF_SCK 32
+#define NRF_MISO 19
+#define NRF_MOSI 23
 
-  // Higher value = darker/less visibility
-  bool lowVisibility = (ldrValue > 3500);
+RF24 radio(NRF_CE, NRF_CSN);
 
-
-  // =================================
-  // 2. CONTROL GREEN LED
-  // =================================
-
-  if (lowVisibility) {
-    digitalWrite(GREEN_LED, HIGH);
-  }
-  else {
-    digitalWrite(GREEN_LED, LOW);
-  }
+const byte address[6] = "00001";
 
 
-  // =================================
-  // 3. READ ULTRASONIC SENSOR
-  // =================================
+// ===================== VARIABLES =====================
 
+int ldrValue = 0;
+
+float distanceCM = 999;
+
+bool fogDetected = false;
+bool obstacleDetected = false;
+
+bool nrfOK = false;
+
+
+// =====================================================
+// READ ONE ULTRASONIC DISTANCE
+// =====================================================
+
+float readDistance()
+{
   digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
+  delayMicroseconds(3);
 
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
 
   digitalWrite(TRIG_PIN, LOW);
 
-  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  unsigned long duration =
+    pulseIn(ECHO_PIN, HIGH, 30000);
 
-  float distance = duration * 0.0343 / 2;
+  // No echo received
+  if (duration == 0)
+  {
+    return 999;
+  }
+
+  float distance =
+    duration * 0.0343 / 2.0;
+
+  // Reject impossible readings
+  if (distance < 2 || distance > 400)
+  {
+    return 999;
+  }
+
+  return distance;
+}
 
 
-  // =================================
-  // 4. DETECT OBSTACLE
-  // =================================
+// =====================================================
+// READ ULTRASONIC MULTIPLE TIMES
+// =====================================================
 
-  bool obstacleDetected = false;
+float getStableDistance()
+{
+  float total = 0;
+  int validReadings = 0;
 
-  if (duration > 0 && distance < 30) {
+  for (int i = 0; i < 5; i++)
+  {
+    float d = readDistance();
+
+    if (d != 999)
+    {
+      total += d;
+      validReadings++;
+    }
+
+    delay(20);
+  }
+
+  if (validReadings == 0)
+  {
+    return 999;
+  }
+
+  return total / validReadings;
+}
+
+
+// =====================================================
+// SEND NRF MESSAGE
+// =====================================================
+
+void sendMessage(const char *message)
+{
+  if (!nrfOK)
+  {
+    return;
+  }
+
+  radio.stopListening();
+
+  bool result =
+    radio.write(message, strlen(message) + 1);
+
+  Serial.print("NRF: ");
+
+  if (result)
+  {
+    Serial.print("SENT -> ");
+  }
+  else
+  {
+    Serial.print("FAILED -> ");
+  }
+
+  Serial.println(message);
+}
+
+
+// =====================================================
+// LED NORMAL
+// =====================================================
+
+void normalLED()
+{
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+}
+
+
+// =====================================================
+// LED FOG
+// =====================================================
+
+void fogLED()
+{
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(RED_LED, LOW);
+}
+
+
+// =====================================================
+// LED OBSTACLE
+// =====================================================
+
+void obstacleLED()
+{
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, HIGH);
+}
+
+
+// =====================================================
+// LED BOTH
+// =====================================================
+
+void bothLED()
+{
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(RED_LED, HIGH);
+}
+
+
+// =====================================================
+// LCD NORMAL
+// =====================================================
+
+void showNormal()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("SYSTEM NORMAL");
+
+  lcd.setCursor(0, 1);
+  lcd.print("SAFE TO MOVE");
+}
+
+
+// =====================================================
+// LCD FOG
+// =====================================================
+
+void showFog()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("FOG DETECTED");
+
+  lcd.setCursor(0, 1);
+  lcd.print("LOW VISIBILITY");
+}
+
+
+// =====================================================
+// LCD OBSTACLE
+// =====================================================
+
+void showObstacle()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("OBSTACLE AHEAD");
+
+  lcd.setCursor(0, 1);
+  lcd.print("STOP VEHICLE");
+}
+
+
+// =====================================================
+// LCD BOTH
+// =====================================================
+
+void showBoth()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("OBSTACLE + FOG");
+
+  lcd.setCursor(0, 1);
+  lcd.print("STOP VEHICLE");
+}
+
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup()
+{
+  Serial.begin(115200);
+
+  delay(1000);
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("      MINEVISION DUMPER 1");
+  Serial.println("================================");
+
+
+  // ---------- Ultrasonic ----------
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  Serial.println("Ultrasonic READY");
+
+
+  // ---------- LDR ----------
+
+  pinMode(LDR_PIN, INPUT);
+
+  Serial.println("LDR READY");
+
+
+  // ---------- LEDs ----------
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+
+  normalLED();
+
+  Serial.println("LEDs READY");
+
+
+  // ---------- LCD ----------
+
+  Wire.begin(LCD_SDA, LCD_SCL);
+
+  lcd.init();
+  lcd.backlight();
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("MINEVISION");
+
+  lcd.setCursor(0, 1);
+  lcd.print("DUMPER 1");
+
+  delay(2000);
+
+  Serial.println("LCD READY");
+
+
+  // ---------- NRF ----------
+
+  SPI.begin(
+    NRF_SCK,
+    NRF_MISO,
+    NRF_MOSI,
+    NRF_CSN
+  );
+
+  Serial.println("Starting NRF...");
+
+  if (radio.begin())
+  {
+    nrfOK = true;
+
+    radio.openWritingPipe(address);
+
+    radio.setChannel(108);
+
+    radio.setDataRate(RF24_250KBPS);
+
+    radio.setPALevel(RF24_PA_LOW);
+
+    radio.setRetries(5, 15);
+
+    radio.stopListening();
+
+    Serial.println("NRF READY");
+  }
+  else
+  {
+    nrfOK = false;
+
+    Serial.println("NRF NOT DETECTED");
+    Serial.println("Sensors will continue.");
+  }
+
+
+  showNormal();
+
+  Serial.println("================================");
+  Serial.println("DUMPER 1 READY");
+  Serial.println("================================");
+}
+
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop()
+{
+  // ===================================================
+  // READ LDR
+  // ===================================================
+
+  ldrValue = analogRead(LDR_PIN);
+
+  fogDetected =
+    (ldrValue > LDR_THRESHOLD);
+
+
+  // ===================================================
+  // READ ULTRASONIC
+  // ===================================================
+
+  distanceCM = getStableDistance();
+
+
+  // ===================================================
+  // OBSTACLE DETECTION
+  // ===================================================
+
+  if (distanceCM != 999 &&
+      distanceCM <= OBSTACLE_DISTANCE)
+  {
     obstacleDetected = true;
   }
-
-
-  // =================================
-  // 5. CONTROL RED LED
-  // =================================
-
-  if (obstacleDetected) {
-    digitalWrite(RED_LED, HIGH);
-  }
-  else {
-    digitalWrite(RED_LED, LOW);
+  else
+  {
+    obstacleDetected = false;
   }
 
 
-  // =================================
-  // 6. SERIAL MONITOR
-  // =================================
+  // ===================================================
+  // SERIAL MONITOR
+  // ===================================================
 
-  Serial.print("LDR: ");
-  Serial.print(ldrValue);
+  Serial.println();
+  Serial.println("----------- SENSOR DATA -----------");
 
-  Serial.print(" | Visibility: ");
+  Serial.print("LDR = ");
+  Serial.println(ldrValue);
 
-  if (lowVisibility) {
-    Serial.print("LOW");
+  Serial.print("Visibility = ");
+
+  if (fogDetected)
+  {
+    Serial.println("LOW");
   }
-  else {
-    Serial.print("CLEAR");
+  else
+  {
+    Serial.println("CLEAR");
   }
 
-  Serial.print(" | Distance: ");
-  Serial.print(distance);
-  Serial.print(" cm");
+  Serial.print("Distance = ");
 
-  Serial.print(" | Obstacle: ");
+  if (distanceCM == 999)
+  {
+    Serial.println("NO ECHO");
+  }
+  else
+  {
+    Serial.print(distanceCM, 1);
+    Serial.println(" cm");
+  }
 
-  if (obstacleDetected) {
+  Serial.print("Obstacle = ");
+
+  if (obstacleDetected)
+  {
     Serial.println("YES");
   }
-  else {
+  else
+  {
     Serial.println("NO");
   }
 
 
-  delay(300);
+  // ===================================================
+  // DECISION
+  // ===================================================
+
+  if (obstacleDetected && fogDetected)
+  {
+    Serial.println(">>> OBSTACLE + FOG");
+
+    bothLED();
+    showBoth();
+
+    sendMessage("BOTH");
+  }
+
+  else if (obstacleDetected)
+  {
+    Serial.println(">>> OBSTACLE DETECTED");
+
+    obstacleLED();
+    showObstacle();
+
+    sendMessage("OBSTACLE");
+  }
+
+  else if (fogDetected)
+  {
+    Serial.println(">>> LOW VISIBILITY");
+
+    fogLED();
+    showFog();
+
+    sendMessage("FOG");
+  }
+
+  else
+  {
+    Serial.println(">>> SYSTEM NORMAL");
+
+    normalLED();
+    showNormal();
+
+    sendMessage("NORMAL");
+  }
+
+  Serial.println("-----------------------------------");
+
+  delay(500);
 }
